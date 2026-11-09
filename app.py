@@ -16,8 +16,8 @@ try:
 except ImportError:
     PdfReader = None
 
-DB_PATH = Path("secure_index.sqlite3")
-CONFIG_PATH = Path("secure_search_config.json")
+DB_PATH = Path.home() / ".colocate_index.sqlite3"
+CONFIG_PATH = Path.home() / ".colocate_config.json"
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".json", ".pdf", ".docx"}
 
 ctk.set_appearance_mode("dark")
@@ -125,7 +125,7 @@ def index_folder_worker(folder, dark_mode_bool, callback_done, callback_error):
 class ModernSearchApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("CoLocate - Private Local Indexing Vault")
+        self.title("CoLocate v1.1.0 - Private Local Indexing Vault")
         self.geometry("1100x700")
         self.minsize(900, 550)
         self.config = load_config()
@@ -180,14 +180,32 @@ class ModernSearchApp(ctk.CTk):
 
         self.text_frame = ctk.CTkFrame(self.main_split)
         self.text_frame.grid(row=0, column=1, sticky="nsew")
-        self.text_frame.grid_rowconfigure(0, weight=1)
+        self.text_frame.grid_rowconfigure(0, weight=0)
         self.text_frame.grid_columnconfigure(0, weight=1)
 
+        self.text_frame.grid_rowconfigure(1, weight=1) # Row 1 has the textbox
+
+        # New UI Element: Inline "Find Inside Document" Search Bar Matrix Header
+        self.find_frame = ctk.CTkFrame(self.text_frame, fg_color="transparent")
+        self.find_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=(12, 0))
+        self.find_frame.grid_columnconfigure(1, weight=1)
+
+        self.lbl_find = ctk.CTkLabel(self.find_frame, text="Find inside text:", font=("Segoe UI", 11, "bold"))
+        self.lbl_find.grid(row=0, column=0, padx=(5, 10), pady=2, sticky="w")
+        self.entry_find = ctk.CTkEntry(self.find_frame, placeholder_text="Type to scan active document...", font=("Segoe UI", 11), height=26)
+        self.entry_find.grid(row=0, column=1, sticky="ew", pady=2)
+        self.entry_find.bind("<KeyRelease>", self.find_inside_text)
+
         self.text_inspector = tk.Text(self.text_frame, wrap="word", bd=0, highlightthickness=0, bg="#232323", fg="#eceff4", insertbackground="#ffffff", padx=15, pady=15, font=("Consolas", 11))
-        self.text_inspector.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        self.text_inspector.grid(row=1, column=0, sticky="nsew", padx=12, pady=12)
+        
+        # Color Tag Index Matrix Initializations
         self.text_inspector.tag_configure("HIGHLIGHT", background="#e6c229", foreground="#121212")
+        self.text_inspector.tag_configure("INLINE_FIND", background="#ff6b6b", foreground="#ffffff")
+        
         self.scrollbar = ctk.CTkScrollbar(self.text_frame, command=self.text_inspector.yview)
-        self.scrollbar.grid(row=0, column=1, sticky="ns", pady=12, padx=(0, 12))
+        self.scrollbar.grid(row=1, column=1, sticky="ns", pady=12, padx=(0, 12))
+
         self.text_inspector.config(yscrollcommand=self.scrollbar.set)
 
         self.footer = ctk.CTkFrame(self, height=32, corner_radius=0)
@@ -234,6 +252,7 @@ class ModernSearchApp(ctk.CTk):
         self.file_listbox.delete(0, "end")
         self.text_inspector.config(state="normal")
         self.text_inspector.delete("1.0", "end")
+        self.entry_find.delete(0, "end")
         self.results_data.clear()
         try:
             hits = db_search(q)
@@ -266,18 +285,53 @@ class ModernSearchApp(ctk.CTk):
         content = extract_text(Path(path_str))
         self.text_inspector.config(state="normal")
         self.text_inspector.delete("1.0", "end")
+        self.entry_find.delete(0, "end") # Clear individual text find parameters on document swap
         self.text_inspector.insert("end", f"SYSTEM PATH: {path_str}\n{'='*70}\n\n{content}")
+
+        # Tokenized Word Highlighting Array Fix Loops
         q = self.query_var.get().strip()
         if q:
-            sp = "1.0"
-            while True:
-                sp = self.text_inspector.search(q, sp, stopindex="end", nocase=True)
-                if not sp:
-                    break
-                ep = f"{sp}+{len(q)}c"
-                self.text_inspector.tag_add("HIGHLIGHT", sp, ep)
-                sp = ep
+            # Clean string symbols to accurately pull split-word targets out of search text blocks
+            clean_q = "".join(c if c.isalnum() or c.isspace() else " " for c in q)
+            words_to_highlight = [word.strip() for word in clean_q.split() if word]
+
+            for word in words_to_highlight:
+                sp = "1.0"
+                while True:
+                    sp = self.text_inspector.search(word, sp, stopindex="end", nocase=True)
+                    if not sp:
+                        break
+                    ep = f"{sp}+{len(word)}c"
+                    self.text_inspector.tag_add("HIGHLIGHT", sp, ep)
+                    sp = ep
+
         self.text_inspector.config(state="disabled")
+    
+    def find_inside_text(self, event=None):
+        """Dynamically scans open inspector text layout viewport to highlight matching arrays"""
+        self.text_inspector.tag_remove("INLINE_FIND", "1.0", "end")
+        find_term = self.entry_find.get().strip()
+
+        if not find_term:
+            return
+
+        sp = "1.0"
+        match_count = 0
+        while True:
+            sp = self.text_inspector.search(find_term, sp, stopindex="end", nocase=True)
+            if not sp:
+                break
+            ep = f"{sp}+{len(find_term)}c"
+            self.text_inspector.tag_add("INLINE_FIND", sp, ep)
+            if match_count == 0:
+                self.text_inspector.see(sp)
+            # Raise the search parameter index priority array above global highlights
+            self.text_inspector.tag_raise("INLINE_FIND", "HIGHLIGHT")
+            sp = ep
+            match_count += 1
+
+        self.status_var.set(f"Found {match_count} inline document occurrences for '{find_term}'.")
+
 
     def export_results(self):
         if not self.results_data:
